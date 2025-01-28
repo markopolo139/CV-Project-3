@@ -2,16 +2,11 @@
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, UpSampling2D, concatenate
 from tensorflow.keras.optimizers import Adam
-from skimage.color import rgb2lab, lab2rgb
-from tensorflow.keras.losses import MeanSquaredError
-from tensorflow.keras.metrics import MeanAbsoluteError
-from keras import backend as K
 
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 import numpy as np
 import matplotlib.pyplot as plt
-import pandas as pd
 import tensorflow as tf
 import os
 import cv2
@@ -25,40 +20,6 @@ config = tf.compat.v1.ConfigProto()
 config.gpu_options.allow_growth = True
 config.gpu_options.per_process_gpu_memory_fraction = 0.8
 session = tf.compat.v1.Session(config=config)
-
-# %%
-"""
-### Creating 500 grayscaled data
-"""
-
-# %%
-# def transform_images_to_grayscale(input_dir="data/train/input", output_dir="data/train/output"):
-#     os.makedirs(output_dir, exist_ok=True)
-
-#     for filename in os.listdir(input_dir):
-#         input_path = os.path.join(input_dir, filename)
-
-#         if filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")):
-#             try:
-#                 image = cv2.imread(input_path)
-
-#                 grayscale_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-#                 output_path = os.path.join(output_dir, filename)
-#                 cv2.imwrite(output_path, grayscale_image)
-#             except Exception as e:
-#                 print(f"Error processing {filename}: {e}")
-
-# transform_images_to_grayscale()
-
-# %%
-"""
-### Loading data
-"""
-
-# %%
-colored_file_path = "data/train/input"
-grayscale_file_path = "data/train/output"
 
 # %%
 """
@@ -83,16 +44,6 @@ def unet_model_colorization(input_size=(256, 256, 1)):
 
     conv4_2 = Conv2D(512, (3, 3), activation='relu', padding='same')(pool3)
     conv4 = Conv2D(512, (3, 3), activation='relu', padding='same')(conv4_2)
-    
-    # pool4 = MaxPooling2D(pool_size=(2, 2))(conv4)
-
-    # conv5_2 = Conv2D(1024, (3, 3), activation='relu', padding='same')(pool4)
-    # conv5 = Conv2D(1024, (3, 3), activation='relu', padding='same')(conv5_2)
-    
-    # up1 = UpSampling2D(size=(2, 2))(conv5)
-    # merge1 = concatenate([conv4, up1], axis=3)
-    # conv6_2 = Conv2D(1024, (3, 3), activation='relu', padding='same')(merge1)
-    # conv6 = Conv2D(512, (3, 3), activation='relu', padding='same')(conv6_2)
     
     up2 = UpSampling2D(size=(2, 2))(conv4)
     merge2 = concatenate([conv3, up2], axis=3)
@@ -149,11 +100,12 @@ def preprocess_target(image):
     return combined_output
 
 # %%
+file_path = "data"
 input_datagen = ImageDataGenerator(preprocessing_function=preprocess_input)
 target_datagen = ImageDataGenerator()
 
-input_generator = input_datagen.flow_from_directory(
-    grayscale_file_path,
+train_input_generator = input_datagen.flow_from_directory(
+    file_path + "/train",
     target_size=(256, 256),
     color_mode='grayscale',
     class_mode=None,
@@ -161,8 +113,26 @@ input_generator = input_datagen.flow_from_directory(
     shuffle=False,
 )
 
-target_generator = target_datagen.flow_from_directory(
-    colored_file_path,
+train_target_generator = target_datagen.flow_from_directory(
+    file_path + "/train",
+    target_size=(256, 256),
+    class_mode=None,
+    batch_size=4,
+    shuffle=False,
+)
+
+# %%
+val_input_generator = input_datagen.flow_from_directory(
+    file_path + "/validation",
+    target_size=(256, 256),
+    color_mode='grayscale',
+    class_mode=None,
+    batch_size=4,
+    shuffle=False,
+)
+
+val_target_generator = target_datagen.flow_from_directory(
+    file_path + "/validation",
     target_size=(256, 256),
     class_mode=None,
     batch_size=4,
@@ -180,18 +150,47 @@ def combined_generator(input_gen, target_gen):
         yield input_batch, processed_target_batch
 
 # Create the combined generator
-train_generator = combined_generator(input_generator, target_generator)
+train_generator = combined_generator(train_input_generator, train_target_generator)
+val_generator = combined_generator(val_input_generator, val_target_generator)
 
 # %%
 model = unet_model_colorization()
-model.compile(optimizer=Adam(learning_rate=1e-4), 
-                loss=MeanSquaredError(), 
-                metrics=[MeanAbsoluteError()])
 
-model.fit(train_generator, steps_per_epoch=len(target_generator), epochs=1, batch_size=4)
-# model.fit(train_generator, steps_per_epoch=1, epochs=1, batch_size=4)
+# from tensorflow.keras.models import load_model
+# model = load_model("colorization_model.keras", custom_objects={'MeanSquaredError': tf.keras.losses.MeanSquaredError})
+
+# %%
+optimizer = Adam(learning_rate=1e-4)
+model.compile(optimizer=optimizer,
+                loss=tf.keras.losses.MeanSquaredError(), 
+                metrics=[tf.keras.metrics.MeanAbsoluteError(), tf.keras.metrics.MeanSquaredError()])
+
+# %%
+checkpoint_directory = "training_checkpoints"
+checkpoint_prefix = os.path.join(checkpoint_directory, "ckpt")
+checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=model)
+
+# %%
+checkpoint.restore(tf.train.latest_checkpoint(checkpoint_directory))
+
+# %%
+import datetime
+
+log_dir = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
+
+# %%
+model.fit(train_generator, 
+          steps_per_epoch=len(train_input_generator), 
+          validation_data=val_generator,
+          validation_steps=len(val_input_generator),
+          epochs=2, batch_size=None,
+          callbacks=[tensorboard_callback])
 
 model.save("colorization_model.keras", save_format="keras")
+
+# %%
+checkpoint.save(file_prefix=checkpoint_prefix)
 
 # %%
 """
@@ -204,6 +203,28 @@ model.save("colorization_model.keras", save_format="keras")
 # model = load_model("colorization_model.keras", custom_objects={'MeanSquaredError': tf.keras.losses.MeanSquaredError})
 
 # %%
+test_input_generator = input_datagen.flow_from_directory(
+    file_path + "/test",
+    target_size=(256, 256),
+    color_mode='grayscale',
+    class_mode=None,
+    batch_size=4,
+    shuffle=False,
+)
+
+test_target_generator = target_datagen.flow_from_directory(
+    file_path + "/test",
+    target_size=(256, 256),
+    class_mode=None,
+    batch_size=4,
+    shuffle=False,
+)
+
+# %%
+test_generator = combined_generator(test_input_generator, test_target_generator)
+model.evaluate(test_generator, steps=len(test_input_generator))
+
+# %%
 def postprocess_lab(l_channel_with_ab):
     l_channel = l_channel_with_ab[..., 0:1]   # Extract L channel
     ab_channels = l_channel_with_ab[..., 1:3] # Extract ab channels
@@ -213,8 +234,8 @@ def postprocess_lab(l_channel_with_ab):
     return rgb_image
 
 # %%
-input_files = sorted(os.listdir(grayscale_file_path + "/class_1"))
-target_files = sorted(os.listdir(colored_file_path + "/class_1"))
+input_files = sorted(os.listdir(file_path + "/test/class_0"))
+target_files = sorted(os.listdir(file_path + "/test/class_0"))
 
 num_images_to_sample = int(0.001 * len(input_files))
 sample_indices = np.random.choice(len(input_files), num_images_to_sample, replace=False)
@@ -223,12 +244,12 @@ X_train = []
 Y_train = []
 
 for idx in sample_indices:
-    input_image_path = os.path.join(grayscale_file_path + "/class_1", input_files[idx])
+    input_image_path = os.path.join(file_path + "/test/class_0", input_files[idx])
     input_image = cv2.imread(input_image_path, cv2.IMREAD_GRAYSCALE)
     processed_input = preprocess_input(input_image)
     X_train.append(processed_input)
 
-    target_image_path = os.path.join(colored_file_path + "/class_1", target_files[idx])
+    target_image_path = os.path.join(file_path + "/test/class_0", target_files[idx])
     target_image = cv2.imread(target_image_path)
     target_image = cv2.resize(target_image, (256, 256))
 
