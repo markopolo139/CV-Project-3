@@ -1,0 +1,6 @@
+tensorflow
+scikit-image
+numpy
+matplotlib
+opencv-python
+dvc[gdrive]
