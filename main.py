@@ -238,6 +238,8 @@ input_files = sorted(os.listdir(file_path + "/test/class_0"))
 target_files = sorted(os.listdir(file_path + "/test/class_0"))
 
 num_images_to_sample = int(0.001 * len(input_files))
+if num_images_to_sample == 0:
+    num_images_to_sample = max(len(input_files), 10)
 sample_indices = np.random.choice(len(input_files), num_images_to_sample, replace=False)
 
 X_train = []
